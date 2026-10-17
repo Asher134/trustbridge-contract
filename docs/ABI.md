@@ -95,54 +95,6 @@ attacker cannot suppress their own trace via a failed disable-then-probe).
 > Codes are **append-only**. Indexers store the numeric discriminant; renumbering
 > silently re-labels historical entries. New variants must be added at the end.
 
-### Audit reads
-
-`get_audit_logs() -> Vec<AuditLogEntry>` returns the retained audit entries
-**oldest-first** with no server-side offset/limit parameters — dashboards and
-indexers paginate client-side by slicing `[offset..offset+limit)` over the
-returned vector (see `audit_page` in `tests/integration.rs` for the reference
-slicing convention, and Issue #646 for the edge-case tests):
-
-| Rule | Behavior |
-|------|----------|
-| Retention | At most `MAX_AUDIT_LOG_ENTRIES` (`100`) entries are retained; each push past the cap evicts the oldest entry (FIFO) |
-| Ordering | Oldest first — index `0` is the oldest retained entry |
-| Empty log | A deployed-but-uninitialized instance returns an empty vector |
-| `offset >= len` | Empty page, not an error |
-| `limit == 0` | Empty page (client convention) |
-| Over-long window | Truncated to the retained tail, not an error |
-
-`get_audit_stats() -> AuditStats` returns monotonic counters
-(`total_events`, `registrations`, …) that **include evicted entries**, so
-stats totals can exceed the 100 retained rows — read the retained window to
-answer "what happened", and the stats to answer "how many ever happened".
-Both reads are permissionless and available while paused (see the conformance
-matrix in `docs/ARCHITECTURE.md`).
-
-### Audit reads
-
-`get_audit_logs() -> Vec<AuditLogEntry>` returns the retained audit entries
-**oldest-first** with no server-side offset/limit parameters — dashboards and
-indexers paginate client-side by slicing `[offset..offset+limit)` over the
-returned vector (see `audit_page` in `tests/integration.rs` for the reference
-slicing convention, and Issue #646 for the edge-case tests):
-
-| Rule | Behavior |
-|------|----------|
-| Retention | At most `MAX_AUDIT_LOG_ENTRIES` (`100`) entries are retained; each push past the cap evicts the oldest entry (FIFO) |
-| Ordering | Oldest first — index `0` is the oldest retained entry |
-| Empty log | A deployed-but-uninitialized instance returns an empty vector |
-| `offset >= len` | Empty page, not an error |
-| `limit == 0` | Empty page (client convention) |
-| Over-long window | Truncated to the retained tail, not an error |
-
-`get_audit_stats() -> AuditStats` returns monotonic counters
-(`total_events`, `registrations`, …) that **include evicted entries**, so
-stats totals can exceed the 100 retained rows — read the retained window to
-answer "what happened", and the stats to answer "how many ever happened".
-Both reads are permissionless and available while paused (see the conformance
-matrix in `docs/ARCHITECTURE.md`).
-
 `tests/testdata/bindings/get_address_simulate.v1.json` is a versioned golden of
 the `ScVal` XDR that `simulateTransaction` returns for `get_address` (hit and
 miss). `tests/bindings_golden.rs` fails when the contract encoding drifts, and CI
