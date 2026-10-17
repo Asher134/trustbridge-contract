@@ -397,6 +397,22 @@ CI runs this target as a named blocking step on every pull request: the
 A failing corpus test fails the quality check. The same job then runs
 `make check`, whose `cargo test` also includes this suite.
 
+### TypeScript Differential Tests
+
+`ts-differential-tests/` checks the TypeScript XDR decoder against the Rust
+goldens. It needs Node.js 20 (the version CI pins) and uses the committed
+`package-lock.json`:
+
+```bash
+make diff-test   # cd ts-differential-tests && npm ci && npm test
+```
+
+CI runs the same target in the `diff-test` job and uploads the test log as the
+`diff-test-output` artifact on failure. When a fixture changes, update the Rust
+golden and the TypeScript side in the same PR — on pull requests
+`scripts/check_fixture_pairing.sh` fails the job if only one side changed. Run
+it locally with `scripts/check_fixture_pairing.sh origin/main`.
+
 ### WASM Integration Tests
 
 The contract includes a WASM upgrade + cooldown integration test in `tests/integration.rs` that exercises the upgrade path using a real WASM artifact. This test is gated behind the `wasm-test` feature flag and is not run by default.
