@@ -40,11 +40,14 @@ make check
 build / wasm-size). Every pull request and push to `main` runs these jobs from
 `.github/workflows/ci.yml`; each one fails the workflow on its first error:
 
-| CI job | Commands | Local equivalent |
-|---|---|---|
-| `Basic checks` | `cargo fmt -- --check` | `make fmt` |
-| `smoke` | `cargo check --all-targets`, then `cargo test` (stable toolchain, cached `target/`, 20 min timeout, no secrets or deploy steps) | `cargo check --all-targets && make test` |
-| `homoglyph_corpus` | `cargo test --test homoglyph_corpus` | `make test-homoglyph` |
+| CI job | Make targets |
+|---|---|
+| `quality` | `cargo test --test homoglyph_corpus` (named blocking step), then `make check` (`make fmt`, `make lint`, `make test`, `make docs-check`, plus error-codes / event-topics / abi-check / wasm-size) |
+| `build` | `make build` (`stellar contract build`), `make wasm-size`, `make wasm-hash-pin WASM_HASH_STRICT=1` |
+| `abi-consistency` | `./scripts/check_error_codes.sh` (`make error-codes`) and `./scripts/check_event_topics.sh` (`make event-topics`) — fails on any `ContractError` / event-topic drift |
+| `oracle-proof-tests` | `cargo test --lib oracle_proof` |
+| `cargo-deny` | `cargo deny --config deny.toml check` (see [Supply-chain checks](#supply-chain-checks)) |
+| `mutants` | `cargo mutants --config mutants.toml --file src/utils.rs` — nightly and `workflow_dispatch` only (see [Mutation Testing](#mutation-testing--utilsrs-issue-243)) |
 
 `make ci` runs the same set with the strict hash gate enabled, so it fails while
 `wasm-hash.pin` still contains `PLACEHOLDER` or does not match the built WASM.

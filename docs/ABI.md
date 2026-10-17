@@ -347,10 +347,10 @@ struct ChallengeRecord {
 | 55 | `BatchRemoveProposalPending` | `propose_batch_remove` was called while a proposal is already pending (Issue #219) |
 | 56 | `NoPendingBatchRemove` | `execute_batch_remove` / `cancel_batch_remove` was called with no live (or already-expired) proposal (Issue #219) |
 | 57 | `RoleExpired` | A role-gated privileged invocation was made at or after the role's expiry timestamp |
-| 58 | `OracleProofBadLayout` | `verify_with_oracle_proof` given an empty message, all-zero signature, or a message not bound to the username/address/expiry (Issue #584) |
-| 59 | `OracleProofNotAllowlisted` | `verify_with_oracle_proof` signed by a key not on the oracle allowlist (Issue #584) |
-| 60 | `OracleProofExpired` | `verify_with_oracle_proof` with a non-zero `expires_at` in the past (Issue #584) |
-| 61 | `OracleProofBadSignature` | `verify_with_oracle_proof` with a non-canonical signature encoding (Issue #584) |
+| 58 | `OracleProofBadLayout` | `verify_with_proof`: empty `message` or all-zero `signature` (structurally malformed proof) |
+| 59 | `OracleProofNotAllowlisted` | `verify_with_proof`: `oracle_pubkey` is not on the oracle allowlist (always, when it is empty) |
+| 60 | `OracleProofExpired` | `verify_with_proof`: non-zero `expires_at` is earlier than the ledger timestamp |
+| 61 | `OracleProofBadSignature` | `verify_with_proof`: signature is not a canonical Ed25519 encoding |
 
 > **`NetworkMismatch` moved from 21 to 30.** This table previously listed it at
 > code 21 while the enum had `InvalidPauseReason` there and no `NetworkMismatch`
