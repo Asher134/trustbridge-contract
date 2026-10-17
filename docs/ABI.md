@@ -347,10 +347,10 @@ struct ChallengeRecord {
 | 55 | `BatchRemoveProposalPending` | `propose_batch_remove` was called while a proposal is already pending (Issue #219) |
 | 56 | `NoPendingBatchRemove` | `execute_batch_remove` / `cancel_batch_remove` was called with no live (or already-expired) proposal (Issue #219) |
 | 57 | `RoleExpired` | A role-gated privileged invocation was made at or after the role's expiry timestamp |
-| 58 | `OracleProofBadLayout` | `verify_with_proof`: empty `message` or all-zero `signature` (structurally malformed proof) |
-| 59 | `OracleProofNotAllowlisted` | `verify_with_proof`: `oracle_pubkey` is not on the oracle allowlist (always, when it is empty) |
-| 60 | `OracleProofExpired` | `verify_with_proof`: non-zero `expires_at` is earlier than the ledger timestamp |
-| 61 | `OracleProofBadSignature` | `verify_with_proof`: signature is not a canonical Ed25519 encoding |
+| 58 | `OracleProofBadLayout` | `verify_with_oracle_proof` given an empty message, all-zero signature, or a message not bound to the username/address/expiry (Issue #584) |
+| 59 | `OracleProofNotAllowlisted` | `verify_with_oracle_proof` signed by a key not on the oracle allowlist (Issue #584) |
+| 60 | `OracleProofExpired` | `verify_with_oracle_proof` with a non-zero `expires_at` in the past (Issue #584) |
+| 61 | `OracleProofBadSignature` | `verify_with_oracle_proof` with a non-canonical signature encoding (Issue #584) |
 
 > **`NetworkMismatch` moved from 21 to 30.** This table previously listed it at
 > code 21 while the enum had `InvalidPauseReason` there and no `NetworkMismatch`
@@ -1054,6 +1054,40 @@ To intentionally accept a breaking layout change, update the golden file in the
 same commit, increment the ABI/schema version recorded in the release change,
 and document the old and new field order in the pull request. The layout test
 must pass with the updated golden before release.
+
+### `get_registered_paginated(cursor: u32, limit: u32) -> Result<ExportPage, ContractError>`
+
+
+### `set_oracle_allowlist(pubkeys: Vec<BytesN<32>>) -> Result<(), ContractError>`
+
+Replaces the Ed25519 oracle public keys whose proofs
+`verify_with_oracle_proof` accepts (Issue #584). An empty list disables oracle
+verification. **Auth:** contract admin.
+
+**Errors:** `NotInitialized`.
+
+### `get_oracle_allowlist() -> Vec<BytesN<32>>`
+
+Returns the current oracle allowlist (empty if never set). Read-only, no auth.
+
+### `verify_with_oracle_proof(github_username: String, proof: OracleProof) -> Result<(), ContractError>`
+
+Marks a registered username verified on the strength of an allowlisted
+oracle's signature instead of an admin/Verifier call. `proof` is
+`OracleProof { oracle_pubkey: BytesN<32>, message: Bytes, signature: BytesN<64>, expires_at: u64 }`,
+and `message` must be exactly
+`<github_username>:<stellar_address strkey>:<expires_at decimal>` for the
+record's current `stellar_address` — see
+[SECURITY.md](SECURITY.md#oracle-signed-proof-interface-signature-check).
+`expires_at = 0` skips the expiry check. On success the record, counters,
+`VerifiedEvent`, and audit log update exactly as for `verify`.
+
+**Auth:** the registered `stellar_address`.
+
+**Errors:** `NotInitialized`, `Paused`, `NotRegistered`,
+`OracleProofBadLayout` (58), `OracleProofNotAllowlisted` (59),
+`OracleProofExpired` (60), `OracleProofBadSignature` (61), `AlreadyVerified`.
+A well-formed signature that does not verify traps the invocation.
 
 ---
 

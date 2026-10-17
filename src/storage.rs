@@ -715,9 +715,6 @@ pub fn extend_record_ttl(env: &Env, github_username: &String) -> bool {
 pub fn remove_record(env: &Env, github_username: &String) {
     let key = (REG_KEY, canon(env, github_username));
     env.storage().persistent().remove(&key);
-    // The re-verify flag belongs to the record; never leave it orphaned for a
-    // later re-registration of the same name to inherit.
-    clear_pending_reverify(env, github_username);
 }
 
 /// Existence check for a single registration.
@@ -1323,17 +1320,11 @@ pub fn get_pending_reverify(env: &Env, github_username: &String) -> bool {
     env.storage().persistent().get(&key).unwrap_or(false)
 }
 
-/// Sets the pending re-verification flag for `github_username` (keyed by its
-/// canonical form, like the record) and bumps its TTL to match the record's.
 pub fn set_pending_reverify(env: &Env, github_username: &String, flag: bool) {
     let key = (PENDING_REVERIFY_KEY, canon(env, github_username));
     env.storage().persistent().set(&key, &flag);
-    env.storage()
-        .persistent()
-        .extend_ttl(&key, TTL_THRESHOLD, TTL_BUMP);
 }
 
-/// Removes the pending re-verification flag. A no-op when none is stored.
 pub fn clear_pending_reverify(env: &Env, github_username: &String) {
     let key = (PENDING_REVERIFY_KEY, canon(env, github_username));
     env.storage().persistent().remove(&key);

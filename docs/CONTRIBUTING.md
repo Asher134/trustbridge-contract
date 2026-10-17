@@ -35,13 +35,16 @@ cargo install --locked stellar-cli@26.1.0
 make check
 ```
 
-CI runs exactly this target, so local and CI quality gates cannot drift.
-The jobs in `.github/workflows/ci.yml` (pull requests and pushes to `main`):
+`make check` is the full local quality gate (`make fmt`, `make lint`,
+`make test`, `make docs-check`, plus error-codes / event-topics / abi-check /
+build / wasm-size). Every pull request and push to `main` runs these jobs from
+`.github/workflows/ci.yml`; each one fails the workflow on its first error:
 
-| CI job | What it runs |
-|---|---|
-| `Basic checks` | `cargo fmt -- --check` |
-| [`make check`](../.github/workflows/ci.yml) | Installs the pinned Rust toolchain, Stellar CLI `26.1.0` (checksum-verified), and the `wasm32v1-none` target; runs `make wasm-hash-pin WASM_HASH_STRICT=1` (release WASM must match `wasm-hash.pin`), then `make check`: `fmt`, `lint`, `error-codes` (`scripts/check_error_codes.sh`), `event-topics` (`scripts/check_event_topics.sh`), `abi-check`, `test`, `build`, `docs-check`, `wasm-size`. Any failing recipe fails the job. No secrets are needed. |
+| CI job | Commands | Local equivalent |
+|---|---|---|
+| `Basic checks` | `cargo fmt -- --check` | `make fmt` |
+| `smoke` | `cargo check --all-targets`, then `cargo test` (stable toolchain, cached `target/`, 20 min timeout, no secrets or deploy steps) | `cargo check --all-targets && make test` |
+| `homoglyph_corpus` | `cargo test --test homoglyph_corpus` | `make test-homoglyph` |
 
 `make ci` runs the same set with the strict hash gate enabled, so it fails while
 `wasm-hash.pin` still contains `PLACEHOLDER` or does not match the built WASM.
@@ -414,22 +417,6 @@ executes `cargo test --test homoglyph_corpus` (no path filters, no
 `continue-on-error`), so a failing corpus test fails the `homoglyph_corpus`
 check. Maintainers should mark `homoglyph_corpus` as a required status check
 in branch protection. The `smoke` job's `cargo test` also includes this suite.
-
-### TypeScript Differential Tests
-
-`ts-differential-tests/` checks the TypeScript XDR decoder against the Rust
-goldens. It needs Node.js 20 (the version CI pins) and uses the committed
-`package-lock.json`:
-
-```bash
-make diff-test   # cd ts-differential-tests && npm ci && npm test
-```
-
-CI runs the same target in the `diff-test` job and uploads the test log as the
-`diff-test-output` artifact on failure. When a fixture changes, update the Rust
-golden and the TypeScript side in the same PR — on pull requests
-`scripts/check_fixture_pairing.sh` fails the job if only one side changed. Run
-it locally with `scripts/check_fixture_pairing.sh origin/main`.
 
 ### WASM Integration Tests
 

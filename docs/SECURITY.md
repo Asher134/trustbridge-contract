@@ -951,113 +951,52 @@ hash for upgrades, not an identity claim.)
 - `OracleProof { oracle_pubkey, message, signature, expires_at }` — a signed
   attestation from an off-chain oracle.
 - `verify_with_proof(env, proof)` — checks, in order: the proof is
-  structurally well-formed (`OracleProofBadLayout`, 58: empty `message` or
-  all-zero `signature`), the signing key is on the allowlist
-  (`OracleProofNotAllowlisted`, 59, including an empty allowlist), the proof
-  has not expired (`OracleProofExpired`, 60; `expires_at == 0` disables the
-  check — production callers should always set a real value), the signature
-  is a canonical encoding (`OracleProofBadSignature`, 61), and finally that
-  `signature` is a valid Ed25519 signature over `message` under
-  `oracle_pubkey`.
+  structurally well-formed (`OracleProofBadLayout`, 58), the signing key is on
+  the allowlist (`OracleProofNotAllowlisted`, 59 — always, for an empty
+  allowlist), the proof has not expired (`OracleProofExpired`, 60;
+  `expires_at == 0` disables the check — production callers should always set
+  a real value), and finally that `signature` is a valid Ed25519 signature over
+  `message` under `oracle_pubkey` (`OracleProofBadSignature`, 61, for a
+  non-canonical encoding).
 
-**Invalid proof fails.** Each rejection above returns its own `Err` code. An
-allowlisted key with a canonically encoded signature that does not verify
-traps the host invocation (`Error(Crypto, InvalidInput)`) instead of
-returning `Err` — `soroban_sdk`'s `Env::crypto().ed25519_verify` has no
-non-panicking form, so this fails the exact same way an invalid
-`require_auth()` signature already does everywhere else in this contract.
-Tests in `src/oracle_proof.rs` cover every path with a fixed test keypair
-(`valid_allowlisted_proof_passes`, `bad_layout_is_rejected_with_layout_code`,
-`non_allowlisted_key_is_rejected`, `expired_proof_is_rejected`,
-`bad_signature_is_rejected_with_signature_code`,
-`wellformed_invalid_signature_traps`); run them with
-`cargo test oracle_proof`.
+**Invalid proof fails.** Every rejection above returns its own error code. An
+allowlisted key with a well-formed signature that does not verify traps the
+host invocation instead of returning `Err` — `soroban_sdk`'s
+`Env::crypto().ed25519_verify` has no non-panicking form, so this fails the
+exact same way an invalid `require_auth()` signature already does everywhere
+else in this contract.
+
+### Contract entrypoints (Issue #584)
+
+- `set_oracle_allowlist(pubkeys)` — contract-admin auth; replaces the allowlist.
+- `get_oracle_allowlist()` — public read.
+- `verify_with_oracle_proof(github_username, proof)` — requires auth from the
+  record's registered `stellar_address`, the same initialization and pause
+  guards as `verify`, and then the checks above. On success it updates the
+  record, counters, `VerifiedEvent`, and audit log exactly as `verify` does
+  (including `AlreadyVerified` for a still-active verification).
+
+**Message layout.** `verify_with_oracle_proof` only accepts a proof whose
+`message` is exactly the bytes
+
+```text
+<github_username>:<stellar_address strkey>:<expires_at as decimal>
+```
+
+e.g. `octocat:GAAA…WHF:1700000000`, built by `oracle_proof::ownership_message`.
+Anything else is `OracleProofBadLayout`, so a proof signed for one
+username/address pair cannot verify another, and its expiry cannot be edited
+without breaking the signature. The message does not include the contract
+address: use a distinct oracle key per deployment so proofs cannot be replayed
+across instances. A proof is reusable until it expires — after a
+`revoke_verification`, the registrant can resubmit an unexpired proof — so
+oracles should issue short-lived proofs.
 
 **This is a signature-check interface, not GitHub verification.** The
 contract has no way to talk to the GitHub API and this change does not give
 it one — see **Out of Scope** above, which still applies unchanged. How the
 oracle confirms ownership before signing is an off-chain contract between the
 oracle operator and the admin who allowlists its key.
-
-### Canonical `message` byte layout (v1)
-
-The `message` field is the exact byte sequence the oracle signs and the
-contract checks. The contract does **not** parse `message` — it passes the
-raw bytes straight to `ed25519_verify` — but all TrustBridge oracle
-implementations MUST produce messages in the following layout so that
-proofs are not silently scoped to a single subject or replayable across
-contexts:
-
-```text
-message = github_username_bytes
-        ++ 0x3A                       // ':' separator (ASCII 0x3A)
-        ++ stellar_address_strkey     // G... strkey as ASCII bytes
-        ++ 0x3A                       // ':' separator
-        ++ expires_at_decimal         // decimal ASCII encoding of expires_at
-```
-
-Field details:
-
-| Field | Encoding | Example |
-|-------|----------|---------|
-| `github_username_bytes` | Raw ASCII bytes of the canonical (lowercased) GitHub username | `testuser` → `[116,101,115,116,117,115,101,114]` |
-| `0x3A` separator | Single byte `0x3A` (ASCII `':'`) | — |
-| `stellar_address_strkey` | ASCII bytes of `Address::to_string()` — the `G...` StrKey encoding | `GABCDEF0000…STUB` |
-| `0x3A` separator | Single byte `0x3A` | — |
-| `expires_at_decimal` | ASCII decimal representation of the `expires_at` Unix timestamp with no padding or suffix | `1700000000` → `[49,55,48,48,48,48,48,48,48,48]` |
-
-**Example** (from the fixed test vector in `src/oracle_proof.rs`):
-
-```
-testuser:GABCDEF0000000000000000000000000000000000000000000000STUB:1700000000
-```
-
-This is 77 bytes: 8 (username) + 1 (`:`) + 56 (strkey) + 1 (`:`) + 10 (timestamp) = 77.
-
-**Why this layout?**
-
-- The `':'` separators make it impossible to confuse `("ab", "c...")` with
-  `("a", "bc...")` — the field boundaries are unambiguous even if the
-  username could theoretically contain all strkey characters.
-- Including `stellar_address_strkey` binds the proof to one specific
-  Stellar account, so a proof issued to `alice`/`G1...` cannot be
-  replayed by `alice`/`G2...`.
-- Including `expires_at` in the signed bytes prevents replay attacks where
-  an expired proof is submitted again: an oracle that re-issues a proof
-  must re-sign the new timestamp, it cannot recycle the old signature.
-- Using `expires_at == 0` in the `OracleProof.expires_at` field disables
-  the on-chain expiry check, but a zero timestamp is still part of the
-  signed message, so every proof is still bound to a specific `expires_at`
-  value (it just happens to mean "no expiry" by convention).
-
-**Validation performed by `verify_with_proof` itself:**
-
-1. Layout check — `message` must not be empty, and `signature` must not be
-   all-zero (catches uninitialized `OracleProof` values before any crypto
-   is attempted). Returns `OracleProofBadLayout` (distinct from other
-   errors so incident triage can tell a malformed proof from a forged one).
-2. Allowlist check — `oracle_pubkey` must appear in the on-chain allowlist.
-   Returns `OracleProofNotAllowlisted`. An empty allowlist rejects
-   everything.
-3. Expiry check — if `expires_at != 0`, `env.ledger().timestamp() >
-   expires_at` returns `OracleProofExpired`.
-4. Signature shape check — the high 3 bits of `signature[63]` must be
-   zero (canonical Ed25519 scalar encoding). Returns `OracleProofBadSignature`
-   rather than handing a non-canonical scalar to the host layer.
-5. `ed25519_verify` — a passing shape check that still fails cryptographic
-   verification traps the host invocation (the SDK has no non-panicking
-   form), failing the same way an invalid `require_auth()` does everywhere
-   else in this contract.
-
-**Error code mapping:**
-
-| Scenario | Error code | `ContractError` variant |
-|---|---|---|
-| Empty message or all-zero signature | `OracleProofBadLayout` | structurally malformed |
-| Key not on allowlist (or allowlist empty) | `OracleProofNotAllowlisted` | key not trusted |
-| `expires_at` passed | `OracleProofExpired` | stale proof |
-| Non-canonical scalar in `signature[63]` | `OracleProofBadSignature` | bad shape |
-| Valid shape but crypto fails | host trap (panic) | same as failed `require_auth` |
 
 **Explicitly out of scope:**
 

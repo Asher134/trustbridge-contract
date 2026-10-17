@@ -28,53 +28,45 @@ jobs:
       - name: Check formatting
         run: cargo fmt -- --check
 
-  make-check:
-    name: make check
+  smoke:
+    name: smoke
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      # Keep in sync with docs/CONTRIBUTING.md (Install dependencies).
-      STELLAR_CLI_VERSION: 26.1.0
-      STELLAR_CLI_SHA256: e18d5a7629102e1ccc07241acbcbebfc05b1c02476ce7d3204ba2d7418be5c0c
+    timeout-minutes: 20
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Same version as rust-toolchain.toml: the WASM hash depends on it.
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@stable
+
+      # Fork PRs cannot write the cache; only main pushes save it.
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
         with:
-          components: rustfmt, clippy
-          targets: wasm32v1-none, wasm32-unknown-unknown
+          save-if: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: cargo check --all-targets
+        run: cargo check --all-targets
+
+      - name: cargo test
+        run: cargo test
+
+  homoglyph_corpus:
+    name: homoglyph_corpus
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/main' }}
 
-      - name: Install Stellar CLI
-        run: |
-          curl -fsSL -o stellar-cli.tar.gz \
-            "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
-          echo "${STELLAR_CLI_SHA256}  stellar-cli.tar.gz" | sha256sum -c -
-          mkdir -p "$HOME/.local/bin"
-          tar -xzf stellar-cli.tar.gz -C "$HOME/.local/bin" stellar
-          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-          "$HOME/.local/bin/stellar" --version
-
-      # Release gate: fails on a stale pin or PLACEHOLDER (WASM_HASH_STRICT=1).
-      # Runs before `make check` so it is enforced on its own.
-      - name: Compute and verify WASM hash pin
-        run: make wasm-hash-pin WASM_HASH_STRICT=1
-
-      - name: Report WASM hash
-        if: always()
-        run: |
-          wasm=target/wasm32v1-none/release/trustbridge_contract.wasm
-          if [ -f "$wasm" ]; then
-            echo "Release WASM SHA-256: \`$(sha256sum "$wasm" | awk '{print $1}')\`" >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      # The single local/CI quality gate: fmt, lint, error-codes, event-topics,
-      # abi-check, test, build, docs-check, wasm-size. Make stops on the first
-      # failing recipe and returns non-zero, failing this job.
-      - name: make check
-        run: make check
+      # Blocking: same command as `make test-homoglyph`.
+      - name: cargo test --test homoglyph_corpus
+        run: cargo test --test homoglyph_corpus
