@@ -100,6 +100,7 @@ use core::fmt;
 /// | 59 | `OracleProofNotAllowlisted` | `verify_with_proof` |
 /// | 60 | `OracleProofExpired` | `verify_with_proof` |
 /// | 61 | `OracleProofBadSignature` | `verify_with_proof` |
+/// | 62 | `AddressMismatch` | `verify_with_oracle_proof` / ownership-proof binding |
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -253,6 +254,8 @@ pub enum ContractError {
     OracleProofNotAllowlisted = 59,
     OracleProofExpired = 60,
     OracleProofBadSignature = 61,
+    /// Proof or caller identity does not match the record's bound Stellar address.
+    AddressMismatch = 62,
 }
 
 impl ContractError {
@@ -327,6 +330,7 @@ impl ContractError {
             59 => Some(ContractError::OracleProofNotAllowlisted),
             60 => Some(ContractError::OracleProofExpired),
             61 => Some(ContractError::OracleProofBadSignature),
+            62 => Some(ContractError::AddressMismatch),
             _ => None,
         }
     }
@@ -428,6 +432,7 @@ impl ContractError {
             ContractError::OracleProofBadLayout => ErrorCategory::Fatal,
             ContractError::OracleProofExpired => ErrorCategory::Fatal,
             ContractError::OracleProofBadSignature => ErrorCategory::Fatal,
+            ContractError::AddressMismatch => ErrorCategory::Fatal,
         }
     }
 
@@ -612,6 +617,7 @@ mod tests {
             ContractError::OracleProofNotAllowlisted,
             ContractError::OracleProofExpired,
             ContractError::OracleProofBadSignature,
+            ContractError::AddressMismatch,
         ];
         for err in all {
             let _ = err.category();

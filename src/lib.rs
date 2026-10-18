@@ -174,12 +174,28 @@ fn event_domain(env: &Env) -> EventDomain {
 /// Shared tail of `verify` and `verify_with_oracle_proof`: flips `record` to
 /// verified and updates counters, events, and the audit log. Authorization is
 /// the caller's responsibility.
+/// Rejects a record whose bound Stellar address is the zero/burn address.
+///
+/// Operator `verify` / `batch_verify` attest GitHub ownership off-chain; the
+/// on-chain binding is the stored `stellar_address`. Events and counters must
+/// never attach verification to a caller-supplied or zero address.
+fn require_bound_record_address(
+    env: &Env,
+    record: &ContributorRecord,
+) -> Result<(), ContractError> {
+    if is_zero_address(env, &record.stellar_address) {
+        return Err(ContractError::ZeroAddress);
+    }
+    Ok(())
+}
+
 fn mark_verified(
     env: &Env,
     github_username: String,
     mut record: ContributorRecord,
     actor: Address,
 ) -> Result<(), ContractError> {
+    require_bound_record_address(env, &record)?;
     // Issue #218: an expired prior verification does not block a fresh
     // one — only a still-active verification does.
     let was_active =
@@ -3522,7 +3538,8 @@ impl TrustBridgeContract {
             charge_verify_rate(&env, &caller, 1)?;
         }
 
-        let mut record = get_record(&env, &github_username).ok_or(ContractError::NotRegistered)?;
+        let record = get_record(&env, &github_username).ok_or(ContractError::NotRegistered)?;
+        require_bound_record_address(&env, &record)?;
 
         // Issue #218: an expired prior verification does not block a fresh
         // one — only a still-active verification does.
@@ -3589,6 +3606,9 @@ impl TrustBridgeContract {
     ///   canonically encoded; an invalid but well-formed signature traps.
     /// - [`ContractError::AlreadyVerified`] if the record is verified and that
     ///   verification has not expired.
+    /// - [`ContractError::AddressMismatch`] if the proof is not bound to this
+    ///   record's current `stellar_address`.
+    /// - [`ContractError::ZeroAddress`] if the record's bound address is zero.
     pub fn verify_with_oracle_proof(
         env: Env,
         github_username: String,
@@ -3598,6 +3618,10 @@ impl TrustBridgeContract {
         require_not_paused(&env)?;
 
         let record = get_record(&env, &github_username).ok_or(ContractError::NotRegistered)?;
+        require_bound_record_address(&env, &record)?;
+        // Authenticated identity is the record's bound address — never a
+        // caller-supplied substitute. A proof for a different address cannot
+        // skip this check.
         record.stellar_address.require_auth();
 
         crate::oracle_proof::verify_ownership_proof(
@@ -9590,6 +9614,255 @@ mod test {
                 "Verifier-role verify must set verified=true"
             );
         });
+    }
+
+    /// Matching bound address: admin verify of a registered record succeeds
+    /// and writes the record's `stellar_address`, not the caller's.
+    #[test]
+    fn test_verify_address_binding_happy_path() {
+        let env = Env::default();
+        let (admin, user, _other, contract_id) = setup(&env);
+        env.mock_all_auths();
+        env.as_contract(&contract_id, || {
+            TrustBridgeContract::register(
+                env.clone(),
+                username(&env, "octocat"),
+                user.clone(),
+                Vec::new(&env),
+            )
+            .unwrap();
+            TrustBridgeContract::verify(env.clone(), admin.clone(), username(&env, "octocat"))
+                .unwrap();
+            let record =
+                TrustBridgeContract::get_address(env.clone(), username(&env, "octocat")).unwrap();
+            assert!(record.verified);
+            assert_eq!(record.stellar_address, user);
+            assert_eq!(TrustBridgeContract::get_verified_count(env.clone()), 1);
+        });
+    }
+
+    /// Unprivileged caller authenticating as a different address than the
+    /// record cannot verify it (`NotAuthorized`).
+    #[test]
+    fn test_verify_mismatched_caller_rejected() {
+        let env = Env::default();
+        let (_admin, user, stranger, contract_id) = setup(&env);
+        env.mock_all_auths();
+        env.as_contract(&contract_id, || {
+            TrustBridgeContract::register(
+                env.clone(),
+                username(&env, "octocat"),
+                user.clone(),
+                Vec::new(&env),
+            )
+            .unwrap();
+            let result = TrustBridgeContract::verify(
+                env.clone(),
+                stranger.clone(),
+                username(&env, "octocat"),
+            );
+            assert_eq!(result, Err(ContractError::NotAuthorized));
+            let record =
+                TrustBridgeContract::get_address(env.clone(), username(&env, "octocat")).unwrap();
+            assert!(!record.verified);
+            assert_eq!(TrustBridgeContract::get_verified_count(env.clone()), 0);
+        });
+    }
+
+    /// `batch_verify` counts a zero-address (unbound) record as failed, not
+    /// successful, and does not increment the verified counter.
+    #[test]
+    fn test_batch_verify_address_mismatch_tallied_as_failure() {
+        let env = Env::default();
+        let (admin, user, _other, contract_id) = setup(&env);
+        let zero = Address::from_str(&env, crate::utils::ZERO_ADDRESS_STRKEY);
+        env.mock_all_auths();
+        env.as_contract(&contract_id, || {
+            TrustBridgeContract::register(
+                env.clone(),
+                username(&env, "alice"),
+                user.clone(),
+                Vec::new(&env),
+            )
+            .unwrap();
+            set_record(
+                &env,
+                &username(&env, "burned"),
+                &ContributorRecord {
+                    stellar_address: zero,
+                    payout_address: user.clone(),
+                    registered_at: env.ledger().timestamp() as u32,
+                    verified: false,
+                    is_bot: false,
+                },
+            );
+            let usernames =
+                soroban_sdk::vec![&env, username(&env, "alice"), username(&env, "burned"),];
+            let summary =
+                TrustBridgeContract::batch_verify(env.clone(), admin.clone(), usernames).unwrap();
+            assert_eq!(summary.total, 2);
+            assert_eq!(summary.successful, 1);
+            assert_eq!(summary.failed, 1);
+            assert!(
+                TrustBridgeContract::get_address(env.clone(), username(&env, "alice"))
+                    .unwrap()
+                    .verified
+            );
+            assert!(
+                !TrustBridgeContract::get_address(env.clone(), username(&env, "burned"))
+                    .unwrap()
+                    .verified
+            );
+            assert_eq!(TrustBridgeContract::get_verified_count(env.clone()), 1);
+        });
+    }
+
+    /// Mixed batch: one valid record, one missing username, one unbound
+    /// record. Success tally must not include the failures.
+    #[test]
+    fn test_batch_verify_mixed_binding_and_missing() {
+        let env = Env::default();
+        let (admin, user, _other, contract_id) = setup(&env);
+        let zero = Address::from_str(&env, crate::utils::ZERO_ADDRESS_STRKEY);
+        env.mock_all_auths();
+        env.as_contract(&contract_id, || {
+            TrustBridgeContract::register(
+                env.clone(),
+                username(&env, "alice"),
+                user.clone(),
+                Vec::new(&env),
+            )
+            .unwrap();
+            set_record(
+                &env,
+                &username(&env, "burned"),
+                &ContributorRecord {
+                    stellar_address: zero,
+                    payout_address: user.clone(),
+                    registered_at: env.ledger().timestamp() as u32,
+                    verified: false,
+                    is_bot: false,
+                },
+            );
+            let usernames = soroban_sdk::vec![
+                &env,
+                username(&env, "alice"),
+                username(&env, "ghost"),
+                username(&env, "burned"),
+            ];
+            let summary =
+                TrustBridgeContract::batch_verify(env.clone(), admin.clone(), usernames).unwrap();
+            assert_eq!(summary.total, 3);
+            assert_eq!(summary.successful, 1);
+            assert_eq!(summary.failed, 2);
+        });
+    }
+
+    /// A proof bound to a different Stellar address cannot verify the record.
+    #[test]
+    fn test_verify_with_oracle_proof_rejects_address_mismatch() {
+        let env = Env::default();
+        let (_admin, user, other, contract_id) = setup(&env);
+        env.mock_all_auths();
+        env.as_contract(&contract_id, || {
+            TrustBridgeContract::register(
+                env.clone(),
+                username(&env, "octocat"),
+                user.clone(),
+                Vec::new(&env),
+            )
+            .unwrap();
+            let proof = OracleProof {
+                oracle_pubkey: BytesN::from_array(&env, &[1u8; 32]),
+                message: crate::oracle_proof::ownership_message(
+                    &env,
+                    &username(&env, "octocat"),
+                    &other,
+                    0,
+                ),
+                signature: BytesN::from_array(&env, &[2u8; 64]),
+                expires_at: 0,
+            };
+            let result = TrustBridgeContract::verify_with_oracle_proof(
+                env.clone(),
+                username(&env, "octocat"),
+                proof,
+            );
+            assert_eq!(result, Err(ContractError::AddressMismatch));
+            assert!(
+                !TrustBridgeContract::get_address(env.clone(), username(&env, "octocat"))
+                    .unwrap()
+                    .verified
+            );
+            assert_eq!(TrustBridgeContract::get_verified_count(env.clone()), 0);
+        });
+    }
+
+    /// Pending address rotation keeps verification bound to the current
+    /// `stellar_address` until `execute_address_rotation`.
+    #[test]
+    fn test_verify_during_pending_rotation_binds_current_address() {
+        let env = Env::default();
+        let (admin, user, new_addr, contract_id) = setup(&env);
+        env.mock_all_auths();
+        env.as_contract(&contract_id, || {
+            TrustBridgeContract::set_rotation_delay(env.clone(), 1_000).unwrap();
+            TrustBridgeContract::register(
+                env.clone(),
+                username(&env, "octocat"),
+                user.clone(),
+                Vec::new(&env),
+            )
+            .unwrap();
+            TrustBridgeContract::request_address_rotation(
+                env.clone(),
+                username(&env, "octocat"),
+                new_addr.clone(),
+            )
+            .unwrap();
+            TrustBridgeContract::verify(env.clone(), admin.clone(), username(&env, "octocat"))
+                .unwrap();
+            let record =
+                TrustBridgeContract::get_address(env.clone(), username(&env, "octocat")).unwrap();
+            assert!(record.verified);
+            assert_eq!(record.stellar_address, user);
+            assert_ne!(record.stellar_address, new_addr);
+        });
+    }
+
+    /// Direct `verify` of a zero-address record is rejected before state change.
+    #[test]
+    fn test_verify_zero_address_record_rejected() {
+        let env = Env::default();
+        let (admin, user, _other, contract_id) = setup(&env);
+        let zero = Address::from_str(&env, crate::utils::ZERO_ADDRESS_STRKEY);
+        env.mock_all_auths();
+        env.as_contract(&contract_id, || {
+            set_record(
+                &env,
+                &username(&env, "burned"),
+                &ContributorRecord {
+                    stellar_address: zero,
+                    payout_address: user.clone(),
+                    registered_at: env.ledger().timestamp() as u32,
+                    verified: false,
+                    is_bot: false,
+                },
+            );
+            let result =
+                TrustBridgeContract::verify(env.clone(), admin.clone(), username(&env, "burned"));
+            assert_eq!(result, Err(ContractError::ZeroAddress));
+            assert_eq!(TrustBridgeContract::get_verified_count(env.clone()), 0);
+        });
+    }
+
+    #[test]
+    fn test_address_mismatch_error_code_matches_golden() {
+        assert_eq!(ContractError::AddressMismatch.code(), 62);
+        assert_eq!(
+            ContractError::from_code(62),
+            Some(ContractError::AddressMismatch)
+        );
     }
 
     /// #114-V8: verify while contract is paused returns Paused (code 7).
