@@ -212,6 +212,8 @@ stellar contract invoke --id "$CONTRACT_ID" --source-account admin --network "$N
 
 - **Auth:** admin only. After this, only the admin can `emergency_pause`.
 
+> Capability table: [SECURITY.md guardian vs admin](SECURITY.md#guardian-vs-admin-capabilities-issue-635) — guardian can only `emergency_pause`; all upgrade, role-grant, and `batch_remove` paths are admin-only.
+
 ---
 
 ### Role recipes
@@ -1143,3 +1145,9 @@ stellar contract invoke --id $CONTRACT_ID --network testnet -- get_pending_role 
 stellar contract invoke --id $CONTRACT_ID --source-account admin-identity --network testnet --send=yes \
   -- activate_role --target $TARGET
 ```
+
+Subgraph consumers: `RoleGrantPendingEvent` handler mapping lives in
+[docs/subgraph/README.md](subgraph/README.md) with the entity in
+[docs/subgraph/schema.graphql](subgraph/schema.graphql); topic symbol coverage
+is enforced by `scripts/check_event_topics.sh` over `scripts/event_indexer.sh`
+`TOPIC_TABLE`. Dashboard state notes: [DASHBOARD_SYNC.md](DASHBOARD_SYNC.md).
