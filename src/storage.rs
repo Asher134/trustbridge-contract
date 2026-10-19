@@ -1154,17 +1154,14 @@ pub fn get_public_paginated_internal(
         let chunk = get_chunk(env, c);
         for i in 0..chunk.len() {
             if seen >= offset && records.len() < effective_limit {
-            if let Some(username) = chunk.get(i) {
-                if let Some(record) = get_record(env, &username) {
-                    // Public page redacts sensitive fields for unverified
-                    // users so contributor addresses and payout destinations
-                    // never leak on the public API surface (Issue #627).
-                    records.push_back((
-                        username,
-                        public_record_view(env, &record),
-                    ));
+                if let Some(username) = chunk.get(i) {
+                    if let Some(record) = get_record(env, &username) {
+                        // Public page redacts sensitive fields for unverified
+                        // users so contributor addresses and payout destinations
+                        // never leak on the public API surface (Issue #627).
+                        records.push_back((username, public_record_view(env, &record)));
+                    }
                 }
-            }
             }
             seen = seen.saturating_add(1);
             if records.len() >= effective_limit {
@@ -1207,7 +1204,7 @@ fn public_record_view(env: &Env, record: &ContributorRecord) -> ContributorRecor
         "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
     );
     ContributorRecord {
-        stellar_address: zero,
+        stellar_address: zero.clone(),
         payout_address: zero,
         ..record.clone()
     }

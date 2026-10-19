@@ -36,7 +36,7 @@ FUTURENET_FRIENDBOT_URL ?= https://friendbot-futurenet.stellar.org
 FUTURENET_IDENTITY ?= $(SOURCE)
 FUTURENET_DRY_RUN ?= false
 
-.PHONY: help build build-legacy test test-homoglyph test-rehearsal fuzz fuzz-parser soak-cursor storage-keys-check bindings-golden bench bench-export bench-username bench-double-verify bench-register-budget bench-budget-ci bench-update-samples fmt lint docs docs-check abi check ci clean \
+.PHONY: help build build-legacy test test-homoglyph test-rehearsal fuzz fuzz-parser soak-cursor storage-keys-check bindings-golden bench bench-export bench-username bench-double-verify bench-register-budget bench-batch-register-budget bench-budget-ci bench-update-samples fmt lint docs docs-check abi check ci clean \
         deploy-testnet deploy-mainnet bindings bindings-build invoke-version require-contract-id \
         invoke-register invoke-lookup invoke-init invoke-stats install-target invoke-extend-ttl \
         invoke-verify invoke-revoke-verification invoke-get-all-registered invoke-export-paginated \
@@ -180,6 +180,10 @@ bench-register-budget: ## Validate register cost stays under CPU/memory threshol
 	  if (failed) exit 1; \
 	  print "OK: register budget samples are within configured thresholds"; \
 	}'
+
+bench-batch-register-budget: ## Run batch register integration tests and report CPU/memory budgets (MAX_WRITE_BATCH ceiling)
+	@echo "Running batch register budget integration tests (ceiling $(MAX_WRITE_BATCH))"
+	@cargo test --test integration test_batch_register -- --nocapture --test-threads=1
 
 fmt: ## Check formatting
 	cargo fmt --all -- --check
