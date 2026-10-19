@@ -11,11 +11,13 @@
 
 #![cfg(test)]
 
-use soroban_sdk::{symbol_short, testutils::Address as _, Address, Env, String, Vec};
+use soroban_sdk::{
+    symbol_short, testutils::Address as _, testutils::Ledger as _, Address, Env, String, Vec,
+};
 
 use trustbridge_contract::{
-    AuditEventType, AuditLogEntry, ContractError, Role, RoleGrantCancelledEvent,
-    RoleGrantPendingEvent, TrustBridgeContract, VerifierAllowEntry, MAX_VERIFIERS,
+    AuditEventType, AuditLogEntry, BatchConfig, ContractError, Role, RoleGrantCancelledEvent,
+    RoleGrantPendingEvent, TrustBridgeContract, VerifierAllowEntry, MAX_VERIFIERS, MAX_WRITE_BATCH,
 };
 
 fn setup_test_env() -> (Env, Address, Address, Address, Address) {
@@ -222,20 +224,10 @@ fn test_integration_public_page_redacts_unverified_addresses() {
 
     env.mock_all_auths();
     env.as_contract(&contract_id, || {
-        TrustBridgeContract::register(
-            env.clone(),
-            s(&env, "alice"),
-            user1.clone(),
-            Vec::new(&env),
-        )
-        .unwrap();
-        TrustBridgeContract::register(
-            env.clone(),
-            s(&env, "bob"),
-            user2.clone(),
-            Vec::new(&env),
-        )
-        .unwrap();
+        TrustBridgeContract::register(env.clone(), s(&env, "alice"), user1.clone(), Vec::new(&env))
+            .unwrap();
+        TrustBridgeContract::register(env.clone(), s(&env, "bob"), user2.clone(), Vec::new(&env))
+            .unwrap();
         // Verify only alice; bob stays unverified.
         TrustBridgeContract::verify(env.clone(), admin.clone(), s(&env, "alice")).unwrap();
     });
@@ -243,21 +235,29 @@ fn test_integration_public_page_redacts_unverified_addresses() {
     env.mock_all_auths();
     env.as_contract(&contract_id, || {
         let page = TrustBridgeContract::get_public_paginated(env.clone(), None, 10).unwrap();
-        let mut by_name: std::collections::BTreeMap<String, _> =
-            page.records.into_iter().collect();
+        let mut by_name: std::collections::BTreeMap<String, _> = page.records.into_iter().collect();
         // Total must include both registrations.
         assert_eq!(page.total, 2);
 
         let alice = by_name
             .remove(&s(&env, "alice"))
             .expect("alice must be on the public page");
-        assert_ne!(alice.stellar_address, zero, "verified address must not be redacted");
+        assert_ne!(
+            alice.stellar_address, zero,
+            "verified address must not be redacted"
+        );
 
         let bob = by_name
             .remove(&s(&env, "bob"))
             .expect("bob must be on the public page");
-        assert_eq!(bob.stellar_address, zero, "unverified address must be redacted");
-        assert_eq!(bob.payout_address, zero, "unverified payout must be redacted");
+        assert_eq!(
+            bob.stellar_address, zero,
+            "unverified address must be redacted"
+        );
+        assert_eq!(
+            bob.payout_address, zero,
+            "unverified payout must be redacted"
+        );
     });
 }
 
@@ -4182,5 +4182,273 @@ fn test_verifier_allowlist_expiry_blocks_and_prunes() {
         let pruned = TrustBridgeContract::prune_expired_verifiers(env.clone()).unwrap();
         assert_eq!(pruned, 1);
         assert_eq!(TrustBridgeContract::get_verifiers(env.clone()).len(), 0);
+    });
+}
+
+// ── Batch Register Size Limits and Gas Budgeting (Issue #612) ─────────────────
+
+/// Helper executing bulk sequential registration of usernames using BatchConfig write-cap enforcement.
+/// Returns Ok(Vec<Address>) of generated addresses registered, or ContractError if batch limits or
+/// contract validation fails.
+fn register_batch_bounded(
+    env: &Env,
+    contract_id: &Address,
+    usernames: &Vec<String>,
+) -> Result<Vec<Address>, ContractError> {
+    let config = BatchConfig::for_writes();
+    if !config.is_valid_batch_size(usernames.len()) {
+        return Err(ContractError::InvalidBatchSize);
+    }
+
+    env.mock_all_auths();
+    let mut addrs: Vec<Address> = Vec::new(env);
+    for username in usernames.iter() {
+        let addr = Address::generate(env);
+        env.as_contract(contract_id, || {
+            TrustBridgeContract::register(
+                env.clone(),
+                username.clone(),
+                addr.clone(),
+                Vec::new(env),
+            )
+        })?;
+        addrs.push_back(addr);
+    }
+    Ok(addrs)
+}
+
+/// Generates a vector of `count` unique usernames with a prefix.
+fn make_batch_usernames(env: &Env, count: u32, prefix: &str) -> Vec<String> {
+    let mut names = Vec::new(env);
+    for i in 0..count {
+        names.push_back(s(env, &std::format!("{}-{:03}", prefix, i)));
+    }
+    names
+}
+
+/// Registers up to the configured write-batch ceiling (MAX_WRITE_BATCH = 25).
+/// Verifies all registrations succeed, data is queryable, and logs metered Soroban CPU/memory budget.
+#[test]
+fn test_batch_register_at_max_write_batch_ceiling() {
+    let (env, _admin, _user1, _user2, contract_id) = setup_test_env();
+
+    let usernames = make_batch_usernames(&env, MAX_WRITE_BATCH, "batch-ceil");
+    assert_eq!(usernames.len(), MAX_WRITE_BATCH);
+
+    env.cost_estimate().budget().reset_default();
+    let result = register_batch_bounded(&env, &contract_id, &usernames);
+    assert!(result.is_ok(), "registration at batch ceiling must succeed");
+    let addrs = result.unwrap();
+    assert_eq!(addrs.len(), MAX_WRITE_BATCH);
+
+    // Verify all records exist in registry
+    env.as_contract(&contract_id, || {
+        for (i, name) in usernames.iter().enumerate() {
+            let record = TrustBridgeContract::get_address(env.clone(), name.clone());
+            assert_eq!(
+                record.map(|r| r.stellar_address),
+                Some(addrs.get(i as u32).unwrap()),
+                "registered address mismatch"
+            );
+        }
+        let stats = TrustBridgeContract::get_stats(env.clone());
+        assert_eq!(stats.total, MAX_WRITE_BATCH);
+        assert_eq!(stats.verified, 0);
+    });
+
+    let budget = env.cost_estimate().budget();
+    let cpu = budget.cpu_instruction_cost();
+    let mem = budget.memory_bytes_cost();
+
+    std::println!(
+        "batch_register,ceiling_{},cpu_instructions={},memory_bytes={}",
+        MAX_WRITE_BATCH,
+        cpu,
+        mem
+    );
+
+    // Assert that execution was metered and comfortably within Soroban tx limits
+    assert!(cpu > 0, "CPU cost was not metered");
+    assert!(mem > 0, "Memory cost was not metered");
+    assert!(
+        cpu < 100_000_000,
+        "batch register CPU cost {cpu} exceeded Soroban 100M limit"
+    );
+    assert!(
+        mem < 40_000_000,
+        "batch register memory cost {mem} exceeded Soroban 40M limit"
+    );
+}
+
+/// Assert ContractError::InvalidBatchSize when attempting oversized bulk register helper path.
+#[test]
+fn test_batch_register_oversized_batch_rejected() {
+    let (env, _admin, _user1, _user2, contract_id) = setup_test_env();
+
+    let usernames = make_batch_usernames(&env, MAX_WRITE_BATCH + 1, "oversized");
+    assert_eq!(usernames.len(), MAX_WRITE_BATCH + 1);
+
+    env.cost_estimate().budget().reset_default();
+    let result = register_batch_bounded(&env, &contract_id, &usernames);
+    assert_eq!(
+        result,
+        Err(ContractError::InvalidBatchSize),
+        "Batch of size MAX_WRITE_BATCH + 1 must be rejected with InvalidBatchSize"
+    );
+
+    // Ensure zero records were created
+    env.as_contract(&contract_id, || {
+        assert_eq!(TrustBridgeContract::get_stats(env.clone()).total, 0);
+    });
+}
+
+/// Empty username list rejected before budget spend.
+#[test]
+fn test_batch_register_empty_list_rejected_before_budget_spend() {
+    let (env, _admin, _user1, _user2, contract_id) = setup_test_env();
+
+    let empty = Vec::new(&env);
+
+    env.cost_estimate().budget().reset_default();
+    let result = register_batch_bounded(&env, &contract_id, &empty);
+    assert_eq!(
+        result,
+        Err(ContractError::InvalidBatchSize),
+        "Empty batch must be rejected with InvalidBatchSize"
+    );
+
+    let budget = env.cost_estimate().budget();
+    assert!(
+        budget.cpu_instruction_cost() < 1_000,
+        "No registration budget should be spent on empty batch rejection before contract invocation"
+    );
+
+    env.as_contract(&contract_id, || {
+        assert_eq!(TrustBridgeContract::get_stats(env.clone()).total, 0);
+    });
+}
+
+/// Paused contract blocks register regardless of batch size.
+#[test]
+fn test_batch_register_paused_contract_blocks_register() {
+    let (env, _admin, _user1, _user2, contract_id) = setup_test_env();
+
+    // Pause the contract
+    env.mock_all_auths();
+    env.as_contract(&contract_id, || {
+        TrustBridgeContract::pause(env.clone(), 1).unwrap();
+        assert!(TrustBridgeContract::is_paused(env.clone()));
+    });
+
+    // Valid batch size of 5 usernames
+    let usernames = make_batch_usernames(&env, 5, "paused");
+    let result = register_batch_bounded(&env, &contract_id, &usernames);
+    assert_eq!(
+        result,
+        Err(ContractError::Paused),
+        "Paused contract must reject registration attempts with ContractError::Paused"
+    );
+
+    // Even a batch at the MAX_WRITE_BATCH ceiling must be blocked
+    let ceiling_batch = make_batch_usernames(&env, MAX_WRITE_BATCH, "paused-ceil");
+    let result_ceiling = register_batch_bounded(&env, &contract_id, &ceiling_batch);
+    assert_eq!(
+        result_ceiling,
+        Err(ContractError::Paused),
+        "Paused contract must block registration regardless of batch size"
+    );
+}
+
+/// Chunked index compaction mid-batch must not corrupt pagination cursors.
+#[test]
+fn test_batch_register_compaction_mid_batch_preserves_pagination_cursors() {
+    let (env, _admin, _user1, _user2, contract_id) = setup_test_env();
+
+    // 1. Register first sub-batch of 10 users
+    let batch1 = make_batch_usernames(&env, 10, "subbatch-a");
+    let addrs1 = register_batch_bounded(&env, &contract_id, &batch1).unwrap();
+    assert_eq!(addrs1.len(), 10);
+
+    // 2. Fetch first page with limit 4, obtaining an opaque pagination cursor
+    env.mock_all_auths();
+    let page1 = env.as_contract(&contract_id, || {
+        TrustBridgeContract::get_registered_paginated(env.clone(), None, 4).unwrap()
+    });
+    assert_eq!(page1.records.len(), 4);
+    assert!(page1.has_more);
+    let cursor = page1
+        .next_cursor
+        .expect("cursor must be present for next page");
+
+    // 3. Trigger index compaction mid-batch
+    env.mock_all_auths();
+    env.as_contract(&contract_id, || {
+        let chunks = TrustBridgeContract::compact_index(env.clone()).unwrap();
+        assert!(chunks > 0, "compact_index should write at least one chunk");
+    });
+
+    // 4. Register second sub-batch of 15 users (completing 25 total registrations up to ceiling)
+    let batch2 = make_batch_usernames(&env, 15, "subbatch-b");
+    let addrs2 = register_batch_bounded(&env, &contract_id, &batch2).unwrap();
+    assert_eq!(addrs2.len(), 15);
+
+    // 5. Query using the cursor obtained prior to compaction: cursor must not be corrupted
+    env.mock_all_auths();
+    let page2 = env.as_contract(&contract_id, || {
+        TrustBridgeContract::get_registered_paginated(env.clone(), Some(cursor), 10).unwrap()
+    });
+    assert_eq!(
+        page2.records.len(),
+        10,
+        "cursor must advance smoothly after compaction"
+    );
+    assert_eq!(
+        page2.total, 25,
+        "total count must reflect all registered records"
+    );
+
+    // 6. Complete traversal to end of registry and assert all 25 records were observed in order
+    let mut all_seen = std::vec::Vec::new();
+    let mut page_cursor = None;
+    loop {
+        env.mock_all_auths();
+        let page = env.as_contract(&contract_id, || {
+            TrustBridgeContract::get_registered_paginated(env.clone(), page_cursor.clone(), 10)
+                .unwrap()
+        });
+        for i in 0..page.records.len() {
+            let (u, _) = page.records.get(i).unwrap();
+            all_seen.push(u);
+        }
+        if !page.has_more {
+            break;
+        }
+        page_cursor = page.next_cursor;
+    }
+    assert_eq!(
+        all_seen.len(),
+        25,
+        "pagination must retrieve exactly 25 records"
+    );
+}
+
+/// Scale-test feature gated test exercising multi-batch sequential register pressure.
+#[cfg(feature = "scale-test")]
+#[test]
+fn test_scale_batch_register_multi_batch_load() {
+    let (env, _admin, _user1, _user2, contract_id) = setup_test_env();
+
+    // Run 4 successive batches up to MAX_WRITE_BATCH (100 total registrations)
+    let mut total_registered = 0;
+    for b in 0..4 {
+        let prefix = std::format!("scale-b{:02}", b);
+        let batch = make_batch_usernames(&env, MAX_WRITE_BATCH, &prefix);
+        let addrs = register_batch_bounded(&env, &contract_id, &batch).unwrap();
+        total_registered += addrs.len();
+    }
+
+    env.as_contract(&contract_id, || {
+        let stats = TrustBridgeContract::get_stats(env.clone());
+        assert_eq!(stats.total, total_registered);
     });
 }

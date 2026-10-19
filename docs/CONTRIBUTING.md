@@ -465,6 +465,17 @@ make bench-register-budget
 Thresholds are configurable via `REGISTER_BUDGET_CPU_MAX` / `REGISTER_BUDGET_MEM_MAX`
 make variables (see `Makefile`).
 
+To reproduce and validate batch register size limits (`MAX_WRITE_BATCH = 25`) and metered
+CPU/memory budget headroom locally:
+
+```bash
+make bench-batch-register-budget
+# Or directly via cargo:
+cargo test --test integration test_batch_register -- --nocapture --test-threads=1
+# Optional extended multi-batch load test:
+cargo test --test integration test_scale_batch_register --features scale-test -- --nocapture
+```
+
 In CI, the `quality` job runs this test, publishes the results as a job summary
 table, and uploads the raw CSV as the `register-budget-report` build artifact
 (14-day retention). This check is **advisory**: the step is allowed to fail
@@ -683,10 +694,11 @@ network.
 make bench-budget-ci
 
 # Individual bench targets (output only, no regression gate):
-make bench-register-budget   # register CPU/mem with hard-cap check
-make bench-export            # get_all_registered sweep
-make bench-username          # usernames_match sweep
-make bench-double-verify     # verify success vs rejection
+make bench-register-budget        # register CPU/mem with hard-cap check
+make bench-batch-register-budget  # batch register ceiling CPU/mem integration tests
+make bench-export                 # get_all_registered sweep
+make bench-username               # usernames_match sweep
+make bench-double-verify          # verify success vs rejection
 ```
 
 Always run with `--test-threads=1` (the Makefile targets do this automatically).

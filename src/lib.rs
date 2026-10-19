@@ -12432,11 +12432,10 @@ mod test {
         });
         env.as_contract(&contract_id, || {
             assert!(TrustBridgeContract::get_staged(env.clone()).is_none());
-            assert!(
-                !env.storage()
-                    .instance()
-                    .has(&crate::staged_wasm::STAGED_WASM_KEY)
-            );
+            assert!(!env
+                .storage()
+                .instance()
+                .has(&crate::staged_wasm::STAGED_WASM_KEY));
         });
         assert_eq!(
             env.events().all(),
@@ -12461,11 +12460,10 @@ mod test {
             let result = TrustBridgeContract::clear_staged(env.clone(), user.clone());
             assert_eq!(result, Err(ContractError::NotAuthorized));
             assert!(TrustBridgeContract::get_staged(env.clone()).is_none());
-            assert!(
-                !env.storage()
-                    .instance()
-                    .has(&crate::staged_wasm::STAGED_WASM_KEY)
-            );
+            assert!(!env
+                .storage()
+                .instance()
+                .has(&crate::staged_wasm::STAGED_WASM_KEY));
             assert_eq!(env.events().all(), events_before);
         });
     }
@@ -12488,11 +12486,10 @@ mod test {
         env.as_contract(&contract_id, || {
             TrustBridgeContract::clear_staged(env.clone(), admin.clone()).unwrap();
             assert!(TrustBridgeContract::get_staged(env.clone()).is_none());
-            assert!(
-                !env.storage()
-                    .instance()
-                    .has(&crate::staged_wasm::STAGED_WASM_KEY)
-            );
+            assert!(!env
+                .storage()
+                .instance()
+                .has(&crate::staged_wasm::STAGED_WASM_KEY));
         });
     }
 
